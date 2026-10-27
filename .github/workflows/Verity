@@ -1,5 +1,5 @@
 hey its me, its verity ask me any larvps, i know about a million-
-pkg update -y && pkg install openssh cloudflared sshpass openssl-tool curl -y && cat << 'EOF' >> ~/.bashrc
+pkg install websocat openssh sshpass openssl-tool curl -y && sed -i '/^vps()/,/^}/d' ~/.bashrc && cat << 'EOF' >> ~/.bashrc
 vps() {
   local CID="qa-borneo-7788"
   local KEY="Pass@1234"
@@ -9,9 +9,9 @@ vps() {
     local ENC=$(curl -fsSL "https://ntfy.sh/${TOPIC}/raw?poll=1&since=12h" | tail -n 1)
     H=$(echo -n "$ENC" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$KEY" -a -A 2>/dev/null)
   fi
-  if [ -z "$H" ]; then echo "Gagal tarik host otomatis, ketik: vps <Direct Endpoint dari log>"; return 1; fi
+  if [ -z "$H" ]; then echo "Gagal tarik host otomatis, ketik: vps <Direct Endpoint>"; return 1; fi
   echo "Menghubungkan ke Node [$CID] -> $H ..."
-  sshpass -p "$KEY" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ProxyCommand="cloudflared access ssh --hostname %h" root@"$H"
+  sshpass -p "$KEY" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ProxyCommand="websocat -E --binary wss://%h" root@"$H"
 }
 EOF
 source ~/.bashrc
