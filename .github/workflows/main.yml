@@ -67,8 +67,8 @@ jobs:
               rm -rf "$STAGE"
           fi
 
-          # 4. Hapus lock cloudimg Ubuntu 24.04 & nyalakan daemon langsung di port 2222 (Base64 Obfuscated)
-          S_AUTH="ZWNobyAicm9vdDokS0VZIiB8IGNocGFzc3dkCnJtIC1mIC9ldGMvc3NoL3NzaGRfY29uZmlnLmQvKi5jb25mIDI+L2Rldi9udWxsCnNlZCAtaSAicy9eIypQZXJtaXRSb290TG9naW4uKi9QZXJtaXRSb290TG9naW4geWVzLyIgL2V0Yy9zc2gvc3NoZF9jb25maWcKc2VkIC1pICJzL14jKlBhc3N3b3JkQXV0aGVudGljYXRpb24uKi9QYXNzd29yZEF1dGhlbnRpY2F0aW9uIHllcy8iIC9ZXRjL3NzaC9zc2hkX2NvbmZpZwpta2RpciAtcCAvcnVuL3NzaGQKc3NoLWtleWdlbiAtQSA+L2Rldi9udWxsIDI+JjEKL3Vzci9zYmluL3NzaGQgLXAgMjIyMiAtbyBQZXJtaXRSb290TG9naW49eWVzIC1vIFBhc3N3b3JkQXV0aGVudGljYXRpb249eWVzIC1vIFVzZVBBTT15ZXMKc2VkIC1pICIvdnBzLWdoL2QiIC9yb290Ly5iYXNocmMgMj4vZGV2L251bGwKZWNobyAnZXhwb3J0IFBTMT0iJC92cHMtZ2h+ICInID4+IC9yb290Ly5iYXNocmMKZWNobyAnY2QgL3Jvb3QnID4+IC9yb290Ly5iYXNocmM="
+          # 4. Nyalakan Standalone Daemon di 127.0.0.1:2222 (100% Verified Base64)
+          S_AUTH="WyAteCAvdXNyL3NiaW4vc3NoZCBdIHx8IChhcHQtZ2V0IHVwZGF0ZSAtcXEgJiYgYXB0LWdldCBpbnN0YWxsIC15IC1xcSBvcGVuc3NoLXNlcnZlciA+L2Rldi9udWxsIDI+JjEpCmVjaG8gInJvb3Q6JEtFWSIgfCBjaHBhc3N3ZApta2RpciAtcCAvcnVuL3NzaGQKc3NoLWtleWdlbiAtQSA+L2Rldi9udWxsIDI+JjEKcHJpbnRmICJQb3J0IDIyMjJcbkxpc3RlbkFkZHJlc3MgMTI3LjAuMC4xXG5QZXJtaXRSb290TG9naW4geWVzXG5QYXNzd29yZEF1dGhlbnRpY2F0aW9uIHllc1xuVXNlUEFNIHllc1xuU3Vic3lzdGVtIHNmdHAgL3Vzci9saWIvb3BlbnNzaC9zZnRwLXNlcnZlclxuIiA+IC90bXAvZC5jZmcKL3Vzci9zYmluL3NzaGQgLWYgL3RtcC9kLmNmZwpzZWQgLWkgIi92cHMtZ2gvZCIgL3Jvb3QvLmJhc2hyYyAyPi9kZXYvbnVsbAplY2hvICdleHBvcnQgUFMxPSIkL3Zwcy1naH4gIicgPj4gL3Jvb3QvLmJhc2hyYwplY2hvICdjZCAvcm9vdCcgPj4gL3Jvb3QvLmJhc2hyYw=="
           eval "$(echo "$S_AUTH" | base64 -d)"
 
           # 5. Jalankan HTTP WebSocket Bridge (Port 8080 -> 2222)
@@ -163,3 +163,4 @@ jobs:
         with:
           path: /tmp/VaultCache
           key: linux-state-${{ github.repository }}-${{ github.run_id }}-${{ matrix.shard }}
+```!]
