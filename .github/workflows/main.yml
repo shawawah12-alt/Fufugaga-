@@ -65,10 +65,7 @@ jobs:
           sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
 
           sudo dpkg --get-selections | awk '$2=="install"{print $1}' | sort -u > /tmp/base_pkgs.txt
-          ls -1 /opt > /tmp/base_opt.txt 2>/dev/null || true
           ls -1 /usr/local/bin > /tmp/base_ulbin.txt 2>/dev/null || true
-          ls -1 /usr/local/lib > /tmp/base_ullib.txt 2>/dev/null || true
-          ls -1 /usr/local/share > /tmp/base_ulshare.txt 2>/dev/null || true
 
           R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}" | sha256sum | cut -c1-32)
           M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}" | sha256sum | cut -c1-20)"
@@ -87,9 +84,9 @@ jobs:
             echo "Downloading primary state vault..."
             gh release download vault-storage -p "StateVault.7z*" -D /tmp/vault_restore --clobber 2>/dev/null || true
             if ls /tmp/vault_restore/StateVault.7z.001 >/dev/null 2>&1; then
-              if [ -n "$VAULT_PASS" ] && sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ >/dev/null 2>&1; then
+              if [ -n "$VAULT_PASS" ] && sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
                 RESTORED_OK=1
-              elif sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ >/dev/null 2>&1; then
+              elif sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
                 RESTORED_OK=1
               fi
             fi
@@ -104,9 +101,9 @@ jobs:
             fi
             gh release download vault-backup-prev -p "StateVault.7z*" -D /tmp/vault_restore --clobber 2>/dev/null || true
             if ls /tmp/vault_restore/StateVault.7z.001 >/dev/null 2>&1; then
-              if [ -n "$VAULT_PASS" ] && sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ >/dev/null 2>&1; then
+              if [ -n "$VAULT_PASS" ] && sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
                 RESTORED_OK=1
-              elif sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ >/dev/null 2>&1; then
+              elif sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
                 RESTORED_OK=1
               fi
             fi
@@ -120,7 +117,7 @@ jobs:
               git checkout origin/state-vault -- "StateVault.7z*" 2>/dev/null || true
               mv StateVault.7z* /tmp/vault_restore/ 2>/dev/null || true
               if ls /tmp/vault_restore/StateVault.7z.001 >/dev/null 2>&1; then
-                sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ >/dev/null 2>&1 || sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ >/dev/null 2>&1 || true
+                sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1 || sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1 || true
                 RESTORED_OK=1
               fi
             fi
@@ -129,8 +126,6 @@ jobs:
           rm -rf /tmp/vault_restore
 
           if [ "$RESTORED_OK" -eq 1 ]; then
-            gh release delete vault-storage -y --cleanup-tag >/dev/null 2>&1 || true
-
             if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then
               sudo DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends /var/cache/apt/archives/*.deb >/dev/null 2>&1 || true
               sudo DEBIAN_FRONTEND=noninteractive apt-get install -f -y -qq >/dev/null 2>&1 || true
@@ -147,8 +142,9 @@ jobs:
             for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
               if [ -d "$bindir" ]; then
                 sudo chmod -R +x "$bindir" 2>/dev/null || true
-                sudo ln -sf "$bindir"/* /usr/local/bin/ 2>/dev/null || true
-                sudo ln -sf "$bindir"/* /usr/bin/ 2>/dev/null || true
+                for f in "$bindir"/*; do
+                  [ -f "$f" ] && sudo ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+                done
               fi
             done
             echo "State restoration complete."
@@ -178,8 +174,9 @@ jobs:
           for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
             if [ -d "$bindir" ]; then
               chmod -R +x "$bindir" 2>/dev/null || true
-              ln -sf "$bindir"/* /usr/local/bin/ 2>/dev/null || true
-              ln -sf "$bindir"/* /usr/bin/ 2>/dev/null || true
+              for f in "$bindir"/*; do
+                [ -f "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+              done
             fi
           done
 
@@ -208,29 +205,14 @@ jobs:
             mv /root/.vps_extra_pkgs.tmp /root/.vps_extra_pkgs.txt
           fi
 
-          BACKUP_LIST="/root /home /var/www /srv /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.monthly /etc/cron.weekly /etc/crontab /var/spool/cron"
+          BACKUP_LIST="/root /var/www /srv /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.monthly /etc/cron.weekly /etc/crontab /var/spool/cron"
           if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then
             BACKUP_LIST="$BACKUP_LIST /var/cache/apt/archives/*.deb"
           fi
 
-          for item in $(ls -1 /opt 2>/dev/null); do
-            if ! grep -qxF "$item" /tmp/base_opt.txt 2>/dev/null; then
-              BACKUP_LIST="$BACKUP_LIST /opt/$item"
-            fi
-          done
           for item in $(ls -1 /usr/local/bin 2>/dev/null); do
             if ! grep -qxF "$item" /tmp/base_ulbin.txt 2>/dev/null; then
               BACKUP_LIST="$BACKUP_LIST /usr/local/bin/$item"
-            fi
-          done
-          for item in $(ls -1 /usr/local/lib 2>/dev/null); do
-            if ! grep -qxF "$item" /tmp/base_ullib.txt 2>/dev/null; then
-              BACKUP_LIST="$BACKUP_LIST /usr/local/lib/$item"
-            fi
-          done
-          for item in $(ls -1 /usr/local/share 2>/dev/null); do
-            if ! grep -qxF "$item" /tmp/base_ulshare.txt 2>/dev/null; then
-              BACKUP_LIST="$BACKUP_LIST /usr/local/share/$item"
             fi
           done
 
@@ -240,15 +222,10 @@ jobs:
 
           if ls /tmp/vault_out/StateVault.7z.001 >/dev/null 2>&1; then
             if gh release view vault-storage >/dev/null 2>&1; then
-              mkdir -p /tmp/vault_prev
-              gh release download vault-storage -p "StateVault.7z*" -D /tmp/vault_prev --clobber 2>/dev/null || true
-              if ls /tmp/vault_prev/StateVault.7z.001 >/dev/null 2>&1; then
-                gh release delete vault-backup-prev -y --cleanup-tag >/dev/null 2>&1 || true
-                gh release create vault-backup-prev /tmp/vault_prev/StateVault.7z* --title "Fallback Vault" --notes "$ENC_META" --prerelease >/dev/null 2>&1 || true
-              fi
-              rm -rf /tmp/vault_prev
-              gh release delete vault-storage -y --cleanup-tag >/dev/null 2>&1 || true
+              gh release delete vault-backup-prev -y --cleanup-tag >/dev/null 2>&1 || true
+              gh release edit vault-storage --tag vault-backup-prev --title "Fallback Vault" >/dev/null 2>&1 || gh release delete vault-storage -y --cleanup-tag >/dev/null 2>&1 || true
             fi
+            gh release delete vault-storage -y --cleanup-tag >/dev/null 2>&1 || true
             gh release create vault-storage /tmp/vault_out/StateVault.7z* --title "Node State Vault" --notes "$ENC_META" --prerelease >/dev/null 2>&1 || true
           fi
           rm -rf /tmp/vault_out
@@ -371,8 +348,8 @@ jobs:
               H=\$(echo -n "\$ENC" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"\$KEY" -a -A 2>/dev/null)
             fi
             if [ -z "\$H" ]; then echo "Gagal tarik host otomatis, ketik: vps <Direct Endpoint>"; return 1; fi
-            echo "Menghubungkan ke Node [\$CID] -> \$H ..."
-            sshpass -p "\$KEY" ssh -t -c chacha20-poly1305@openssh.com -o IPQoS=lowdelay -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes -o ProxyCommand="websocat -E --binary --ping-interval 15 --ping-timeout 300 wss://%h" root@"\$H" "tmux set -g status off \; set -s escape-time 0 \; set -g detach-on-destroy on \; set-hook -g client-detached 'run-shell \"sleep 600 && [ #{session_attached} -eq 0 ] && tmux kill-session -t main || true\"' \; new-session -A -s main"
+            echo "Menghubungkan ke Node [\$CID] -> \$H (Idle Timeout: 30 Menit)..."
+            sshpass -p "\$KEY" ssh -t -c chacha20-poly1305@openssh.com -o IPQoS=lowdelay -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes -o ProxyCommand="websocat -E --binary --ping-interval 15 --ping-timeout 1800 wss://%h" root@"\$H" "tmux set -g status off \; set -s escape-time 0 \; set -g lock-after-time 1800 \; set -g lock-command 'tmux detach-client' \; set -g detach-on-destroy on \; set-hook -g client-detached 'run-shell \"sleep 1800 && [ #{session_attached} -eq 0 ] && tmux kill-session -t main || true\"' \; new-session -A -s main"
           }
           EOF
           source ~/.bashrc
@@ -396,8 +373,9 @@ jobs:
           for ((m=1; m<=TOTAL_MINS; m++)); do
             for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
               if [ -d "$bindir" ]; then
-                sudo ln -sf "$bindir"/* /usr/local/bin/ 2>/dev/null || true
-                sudo ln -sf "$bindir"/* /usr/bin/ 2>/dev/null || true
+                for f in "$bindir"/*; do
+                  [ -f "$f" ] && sudo ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+                done
               fi
             done
 
