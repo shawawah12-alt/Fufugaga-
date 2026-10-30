@@ -37,7 +37,7 @@ jobs:
           fi
           LIST=$(seq -s, 1 $COUNT)
           echo "shards=[$LIST]" >> $GITHUB_OUTPUT
-          echo "Cluster configured for ${{ github.event.inputs.paket_durasi }} ($COUNT shards)."
+          echo "Cluster configured for ${{ github.event.inputs.paket_durasi }} ($COUNT shards) on Workflow ID ${GITHUB_RUN_ID}."
 
   telemetry-node:
     needs: prepare-cluster
@@ -61,6 +61,9 @@ jobs:
           export RUNNER_TRACKER_ID=""
           sudo chmod 755 /root 2>/dev/null || true
 
+          sudo bash -c "printf 'export GH_TOKEN=\"%s\"\nexport GITHUB_REPOSITORY=\"%s\"\nexport GITHUB_RUN_ID=\"%s\"\n' '$GH_TOKEN' '$GITHUB_REPOSITORY' '$GITHUB_RUN_ID' > /etc/vps_env"
+          sudo chmod 600 /etc/vps_env
+
           echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99keep-debs >/dev/null
           echo 'APT::Keep-Downloaded-Packages "true";' | sudo tee -a /etc/apt/apt.conf.d/99keep-debs >/dev/null
           sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
@@ -68,11 +71,14 @@ jobs:
           sudo dpkg --get-selections | awk '$2=="install"{print $1}' | sort -u > /tmp/base_pkgs.txt
           ls -1 /usr/local/bin > /tmp/base_ulbin.txt 2>/dev/null || true
 
-          R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}" | sha256sum | cut -c1-32)
-          M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}" | sha256sum | cut -c1-20)"
+          VAULT_TAG="${GITHUB_RUN_ID}-vault"
+          VAULT_PREV_TAG="${GITHUB_RUN_ID}-vault-prev"
+          R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}" | sha256sum | cut -c1-32)
+          M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}" | sha256sum | cut -c1-20)"
+
           ENC_META=$(curl -fsSL "https://ntfy.sh/${M_TOPIC}/raw?poll=1&since=72h" 2>/dev/null | tail -n 1)
           if [ -z "$ENC_META" ]; then
-            ENC_META=$(gh release view vault-storage --json body -q .body 2>/dev/null | tr -d '\r\n ')
+            ENC_META=$(gh release view "${VAULT_TAG}" --json body -q .body 2>/dev/null | tr -d '\r\n ')
           fi
           if [ -n "$ENC_META" ]; then
             DEC_META=$(echo -n "$ENC_META" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null)
@@ -87,22 +93,20 @@ jobs:
           mkdir -p /tmp/vault_restore
           RESTORED_OK=0
 
-          if gh release view vault-storage >/dev/null 2>&1; then
-            echo "Downloading primary state vault..."
-            gh release download vault-storage -p "StateVault.7z*" -D /tmp/vault_restore --clobber 2>/dev/null || true
-            if ls /tmp/vault_restore/StateVault.7z.001 >/dev/null 2>&1; then
-              if [ -n "$VAULT_PASS" ] && sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
-                RESTORED_OK=1
-              elif sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
+          if gh release view "${VAULT_TAG}" >/dev/null 2>&1; then
+            echo "Downloading primary workflow vault [${GITHUB_RUN_ID} vault]..."
+            gh release download "${VAULT_TAG}" -p "StateVault.vlt.*" -D /tmp/vault_restore --clobber 2>/dev/null || true
+            if ls /tmp/vault_restore/StateVault.vlt.000 >/dev/null 2>&1 && [ -n "$VAULT_PASS" ]; then
+              if cat /tmp/vault_restore/StateVault.vlt.* | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$VAULT_PASS" 2>/dev/null | sudo tar --ignore-failed-read -xzpf - -C / 2>/dev/null; then
                 RESTORED_OK=1
               fi
             fi
           fi
 
-          if [ "$RESTORED_OK" -eq 0 ] && gh release view vault-backup-prev >/dev/null 2>&1; then
-            echo "Falling back to previous verified vault..."
+          if [ "$RESTORED_OK" -eq 0 ] && gh release view "${VAULT_PREV_TAG}" >/dev/null 2>&1; then
+            echo "Falling back to previous verified vault [${VAULT_PREV_TAG}]..."
             rm -rf /tmp/vault_restore/*
-            ENC_META_PREV=$(gh release view vault-backup-prev --json body -q .body 2>/dev/null | tr -d '\r\n ')
+            ENC_META_PREV=$(gh release view "${VAULT_PREV_TAG}" --json body -q .body 2>/dev/null | tr -d '\r\n ')
             if [ -n "$ENC_META_PREV" ]; then
               DEC_META_PREV=$(echo -n "$ENC_META_PREV" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null)
               if [[ "$DEC_META_PREV" == *":"* ]]; then
@@ -112,11 +116,9 @@ jobs:
                 VAULT_PASS="$DEC_META_PREV"
               fi
             fi
-            gh release download vault-backup-prev -p "StateVault.7z*" -D /tmp/vault_restore --clobber 2>/dev/null || true
-            if ls /tmp/vault_restore/StateVault.7z.001 >/dev/null 2>&1; then
-              if [ -n "$VAULT_PASS" ] && sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
-                RESTORED_OK=1
-              elif sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1; then
+            gh release download "${VAULT_PREV_TAG}" -p "StateVault.vlt.*" -D /tmp/vault_restore --clobber 2>/dev/null || true
+            if ls /tmp/vault_restore/StateVault.vlt.000 >/dev/null 2>&1 && [ -n "$VAULT_PASS" ]; then
+              if cat /tmp/vault_restore/StateVault.vlt.* | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$VAULT_PASS" 2>/dev/null | sudo tar --ignore-failed-read -xzpf - -C / 2>/dev/null; then
                 RESTORED_OK=1
               fi
             fi
@@ -127,7 +129,8 @@ jobs:
 
           if [ -n "$META_CID" ] && [ -n "$VAULT_PASS" ] && ! sudo test -f /root/.vps_creds; then
             sudo bash -c "printf 'CID=\"%s\"\nKEY=\"%s\"\n' '$META_CID' '$VAULT_PASS' > /root/.vps_creds"
-            sudo chmod 644 /root/.vps_creds
+            sudo bash -c "printf 'CID=\"%s\"\nKEY=\"%s\"\n' '$META_CID' '$VAULT_PASS' > /etc/vps_creds"
+            sudo chmod 644 /root/.vps_creds /etc/vps_creds
           fi
 
           if [ "$RESTORED_OK" -eq 1 ]; then
@@ -154,9 +157,9 @@ jobs:
                 fi
               done
             '
-            echo "State restoration complete."
+            echo "State restoration complete for Workflow [${GITHUB_RUN_ID}]."
           else
-            echo "Fresh cluster deployment."
+            echo "Fresh isolated environment initialized for Workflow [${GITHUB_RUN_ID}]."
           fi
           exit 0
 
@@ -167,17 +170,21 @@ jobs:
           #!/bin/bash
           set +e
           chmod 755 /root 2>/dev/null || true
+          [ -f /etc/vps_env ] && source /etc/vps_env
           if [ -f /root/.vps_creds ]; then
             source /root/.vps_creds
           elif [ -f /etc/vps_creds ]; then
             source /etc/vps_creds
           fi
-          if [ -z "$KEY" ] || [ -z "$CID" ]; then
+          if [ -z "$KEY" ] || [ -z "$CID" ] || [ -z "$GITHUB_RUN_ID" ]; then
             exit 0
           fi
 
-          R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}" | sha256sum | cut -c1-32)
-          M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}" | sha256sum | cut -c1-20)"
+          VAULT_TAG="${GITHUB_RUN_ID}-vault"
+          VAULT_PREV_TAG="${GITHUB_RUN_ID}-vault-prev"
+          VAULT_TITLE="${GITHUB_RUN_ID} vault"
+          R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}" | sha256sum | cut -c1-32)
+          M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}" | sha256sum | cut -c1-20)"
           ENC_META=$(echo -n "${CID}:${KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
           curl -fsSL -X POST -d "$ENC_META" "https://ntfy.sh/${M_TOPIC}" >/dev/null 2>&1 || true
 
@@ -215,28 +222,29 @@ jobs:
             mv /root/.vps_extra_pkgs.tmp /root/.vps_extra_pkgs.txt
           fi
 
-          BACKUP_LIST="/root /var/www /srv /etc/vps_creds /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.monthly /etc/cron.weekly /etc/crontab /var/spool/cron"
-          if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then
-            BACKUP_LIST="$BACKUP_LIST /var/cache/apt/archives/*.deb"
-          fi
+          BACKUP_PATHS="root"
+          for p in var/www srv etc/vps_creds etc/cron.d etc/cron.daily etc/cron.hourly etc/cron.monthly etc/cron.weekly etc/crontab var/spool/cron var/cache/apt/archives; do
+            [ -e "/$p" ] && BACKUP_PATHS="$BACKUP_PATHS $p"
+          done
 
           for item in $(ls -1 /usr/local/bin 2>/dev/null); do
-            if ! grep -qxF "$item" /tmp/base_ulbin.txt 2>/dev/null; then
-              BACKUP_LIST="$BACKUP_LIST /usr/local/bin/$item"
+            if [ "$item" != "vps-sync-state" ] && [ "$item" != "ws-bridge" ] && [ "$item" != "edge-connector" ]; then
+              if ! grep -qxF "$item" /tmp/base_ulbin.txt 2>/dev/null; then
+                BACKUP_PATHS="$BACKUP_PATHS usr/local/bin/$item"
+              fi
             fi
           done
 
           rm -rf /tmp/vault_out
           mkdir -p /tmp/vault_out
-          7z a -t7z -m0=lzma2 -mx=1 -mmt=on -mhe=on -p"${KEY}" -v1900m /tmp/vault_out/StateVault.7z $BACKUP_LIST >/dev/null 2>&1 || true
+          tar --ignore-failed-read --warning=no-file-changed -I 'gzip -1' -cpf - -C / $BACKUP_PATHS 2>/dev/null | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$KEY" | split -b 1900M -d -a 3 - /tmp/vault_out/StateVault.vlt.
 
-          if ls /tmp/vault_out/StateVault.7z.001 >/dev/null 2>&1; then
-            if gh release view vault-storage >/dev/null 2>&1; then
-              gh release delete vault-backup-prev -y --cleanup-tag >/dev/null 2>&1 || true
-              gh release edit vault-storage --tag vault-backup-prev --title "Fallback Vault" >/dev/null 2>&1 || gh release delete vault-storage -y --cleanup-tag >/dev/null 2>&1 || true
-            fi
-            gh release delete vault-storage -y --cleanup-tag >/dev/null 2>&1 || true
-            gh release create vault-storage /tmp/vault_out/StateVault.7z* --title "Node State Vault" --notes "$ENC_META" --prerelease >/dev/null 2>&1 || true
+          if ls /tmp/vault_out/StateVault.vlt.000 >/dev/null 2>&1 && [ -s /tmp/vault_out/StateVault.vlt.000 ]; then
+            gh release delete "${VAULT_PREV_TAG}" -y --cleanup-tag >/dev/null 2>&1 || true
+            gh release create "${VAULT_PREV_TAG}" /tmp/vault_out/StateVault.vlt.* --title "${VAULT_TITLE} prev" --notes "$ENC_META" --prerelease >/dev/null 2>&1 || true
+
+            gh release delete "${VAULT_TAG}" -y --cleanup-tag >/dev/null 2>&1 || true
+            gh release create "${VAULT_TAG}" /tmp/vault_out/StateVault.vlt.* --title "${VAULT_TITLE}" --notes "$ENC_META" --prerelease >/dev/null 2>&1 || true
           fi
           rm -rf /tmp/vault_out
           EOF_SYNC
@@ -244,6 +252,8 @@ jobs:
           exit 0
 
       - name: Initialize Node Telemetry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
           export RUNNER_TRACKER_ID=""
@@ -264,10 +274,14 @@ jobs:
           sudo bash -c "printf 'CID=\"%s\"\nKEY=\"%s\"\n' '$CID' '$KEY' > /etc/vps_creds"
           sudo chmod 644 /root/.vps_creds /etc/vps_creds
 
-          R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}" | sha256sum | cut -c1-32)
-          M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}" | sha256sum | cut -c1-20)"
-          ENC_META=$(echo -n "${CID}:${KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
-          curl -fsSL -X POST -d "$ENC_META" "https://ntfy.sh/${M_TOPIC}" >/dev/null 2>&1 || true
+          sudo bash -c 'cat << "TMUX_EOF" > /root/.tmux.conf
+          set -g status off
+          set -s escape-time 0
+          set -g lock-after-time 1800
+          set -g lock-command "tmux detach-client"
+          set -g detach-on-destroy on
+          set-hook -g client-detached "run-shell \"sleep 1800 && [ #{session_attached} -eq 0 ] && tmux kill-session -t main || true\""
+          TMUX_EOF'
 
           if ! sudo test -f /root/autostart.sh; then
             sudo bash -c 'cat << "AUTO_EOF" > /root/autostart.sh
@@ -335,6 +349,10 @@ jobs:
             fi
           done
 
+          if [ "${{ matrix.shard }}" = "1" ]; then
+            sudo /usr/local/bin/vps-sync-state >/dev/null 2>&1 &
+          fi
+
           if [ -n "$ENDPOINT" ]; then
             TOPIC="ci-sync-$(echo -n "${CID}:${KEY}" | sha256sum | cut -c1-20)"
             ENC=$(echo -n "$ENDPOINT" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$KEY" -a -A)
@@ -344,6 +362,7 @@ jobs:
               echo "=================================================================="
               echo "   DATA AKSES VPS CUSTOMER (HANYA MUNCUL DI SHARD #1 - SIMPAN!)   "
               echo "=================================================================="
+              echo "Workflow ID   : ${GITHUB_RUN_ID} (Vault: ${GITHUB_RUN_ID} vault)"
               echo "Paket Durasi  : ${{ github.event.inputs.paket_durasi }}"
               echo "Node ID (CID) : $CID"
               echo "Password Root : $KEY"
@@ -353,7 +372,6 @@ jobs:
               echo "------------------------------------------------------------------"
               cat << TERMUX_EOF
           pkg update -y && pkg install -y openssh sshpass openssl-tool curl websocat termux-api
-          sed -i '/^vps()/,/^}/d' ~/.bashrc && cat << 'EOF' >> ~/.bashrc
           vps() {
             termux-wake-unlock 2>/dev/null || true
             local CID="$CID"
@@ -366,16 +384,16 @@ jobs:
             fi
             if [ -z "\$H" ]; then echo "Gagal tarik host otomatis, ketik: vps <Direct Endpoint>"; return 1; fi
             echo "Menghubungkan ke Node [\$CID] -> \$H (Idle Timeout: 30 Menit)..."
-            sshpass -p "\$KEY" ssh -t -c chacha20-poly1305@openssh.com -o IPQoS=lowdelay -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes -o ProxyCommand="websocat -E --binary --ping-interval 15 --ping-timeout 1800 wss://%h" root@"\$H" "tmux set -g status off \; set -s escape-time 0 \; set -g lock-after-time 1800 \; set -g lock-command 'tmux detach-client' \; set -g detach-on-destroy on \; set-hook -g client-detached 'run-shell \"sleep 600 && [ #{session_attached} -eq 0 ] && tmux kill-session -t main || true\"' \; new-session -A -s main"
+            sshpass -p "\$KEY" ssh -t -c chacha20-poly1305@openssh.com -o IPQoS=lowdelay -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes -o ProxyCommand="websocat -E --binary --ping-interval 15 --ping-timeout 1800 wss://%h" root@"\$H" "tmux new-session -A -s main"
           }
-          EOF
-          source ~/.bashrc
+          sed -i '/^vps ()/,/^}/d; /^vps()/,/^}/d' ~/.bashrc 2>/dev/null || true
+          declare -f vps >> ~/.bashrc
           TERMUX_EOF
               echo "=================================================================="
               echo "Cara Pakai Konsumen: Paste sekali di awal, selanjutnya tinggal ketik: vps"
               echo "=================================================================="
             else
-              echo "Node Shard #${{ matrix.shard }} active & synced to encrypted channel [$CID]."
+              echo "Node Shard #${{ matrix.shard }} active & synced to encrypted channel [$CID] (Vault: ${GITHUB_RUN_ID} vault)."
             fi
           fi
           exit 0
@@ -386,7 +404,7 @@ jobs:
         run: |
           set +e
           TOTAL_MINS=${SHARD_DURATION}
-          echo "Telemetry active for ${TOTAL_MINS} minutes on Shard #${{ matrix.shard }}..."
+          echo "Telemetry active for ${TOTAL_MINS} minutes on Shard #${{ matrix.shard }} (Workflow ${GITHUB_RUN_ID})..."
           for ((m=1; m<=TOTAL_MINS; m++)); do
             sudo bash -c '
               for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
@@ -397,6 +415,16 @@ jobs:
                 fi
               done
             '
+
+            if ! pgrep -f "/usr/sbin/sshd" >/dev/null 2>&1; then
+              sudo /usr/sbin/sshd -f /tmp/d.cfg 2>/dev/null || true
+            fi
+
+            if ! pgrep -f "ws-bridge" >/dev/null 2>&1; then
+              export RUNNER_TRACKER_ID=""
+              nohup /usr/local/bin/ws-bridge -E --binary ws-l:127.0.0.1:8080 tcp:127.0.0.1:2222 >/dev/null 2>&1 &
+              sleep 1
+            fi
 
             if ! pgrep -f "edge-connector" >/dev/null 2>&1; then
               export RUNNER_TRACKER_ID=""
@@ -415,7 +443,7 @@ jobs:
             fi
 
             if (( m % 30 == 0 )); then
-              sudo -E /usr/local/bin/vps-sync-state >/dev/null 2>&1 &
+              sudo /usr/local/bin/vps-sync-state >/dev/null 2>&1 &
             fi
 
             sleep 60
@@ -428,8 +456,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          echo "Running final shard state synchronization..."
+          echo "Running final shard state synchronization to [${GITHUB_RUN_ID} vault]..."
           wait
-          sudo -E /usr/local/bin/vps-sync-state
-          echo "Final shard state vault synchronized."
+          sudo /usr/local/bin/vps-sync-state
+          echo "Final shard state vault [${GITHUB_RUN_ID} vault] synchronized."
           exit 0
