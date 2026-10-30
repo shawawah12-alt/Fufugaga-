@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       paket_durasi:
-        description: 'choose'
+        description: 'Choose'
         required: true
         default: '12_hari'
         type: choice
@@ -69,7 +69,12 @@ jobs:
           sudo rm -f /etc/apt/apt.conf.d/docker-clean 2>/dev/null || true
 
           sudo dpkg --get-selections | awk '$2=="install"{print $1}' | sort -u > /tmp/base_pkgs.txt
+          ls -1 / > /tmp/base_rootdir.txt 2>/dev/null || true
+          ls -1 /home > /tmp/base_home.txt 2>/dev/null || true
+          ls -1 /opt > /tmp/base_opt.txt 2>/dev/null || true
           ls -1 /usr/local/bin > /tmp/base_ulbin.txt 2>/dev/null || true
+          ls -1 /usr/local/lib > /tmp/base_ullib.txt 2>/dev/null || true
+          ls -1 /usr/local/share > /tmp/base_ulshare.txt 2>/dev/null || true
 
           VAULT_TAG="${GITHUB_RUN_ID}-vault"
           VAULT_PREV_TAG="${GITHUB_RUN_ID}-vault-prev"
@@ -97,7 +102,7 @@ jobs:
             echo "Downloading primary workflow vault [${GITHUB_RUN_ID} vault]..."
             gh release download "${VAULT_TAG}" -p "StateVault.vlt.*" -D /tmp/vault_restore --clobber 2>/dev/null || true
             if ls /tmp/vault_restore/StateVault.vlt.000 >/dev/null 2>&1 && [ -n "$VAULT_PASS" ]; then
-              if cat /tmp/vault_restore/StateVault.vlt.* | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$VAULT_PASS" 2>/dev/null | sudo tar --ignore-failed-read -xzpf - -C / 2>/dev/null; then
+              if cat /tmp/vault_restore/StateVault.vlt.* | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$VAULT_PASS" 2>/dev/null | sudo tar --ignore-failed-read --exclude='home/runner*' --exclude='opt/runner*' --exclude='opt/hostedtoolcache*' --exclude='opt/actionarchivecache*' -xzpf - -C / 2>/dev/null; then
                 RESTORED_OK=1
               fi
             fi
@@ -118,7 +123,7 @@ jobs:
             fi
             gh release download "${VAULT_PREV_TAG}" -p "StateVault.vlt.*" -D /tmp/vault_restore --clobber 2>/dev/null || true
             if ls /tmp/vault_restore/StateVault.vlt.000 >/dev/null 2>&1 && [ -n "$VAULT_PASS" ]; then
-              if cat /tmp/vault_restore/StateVault.vlt.* | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$VAULT_PASS" 2>/dev/null | sudo tar --ignore-failed-read -xzpf - -C / 2>/dev/null; then
+              if cat /tmp/vault_restore/StateVault.vlt.* | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$VAULT_PASS" 2>/dev/null | sudo tar --ignore-failed-read --exclude='home/runner*' --exclude='opt/runner*' --exclude='opt/hostedtoolcache*' --exclude='opt/actionarchivecache*' -xzpf - -C / 2>/dev/null; then
                 RESTORED_OK=1
               fi
             fi
@@ -148,13 +153,11 @@ jobs:
             fi
 
             sudo bash -c '
-              for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
-                if [ -d "$bindir" ]; then
-                  chmod -R +x "$bindir" 2>/dev/null || true
-                  for f in "$bindir"/*; do
-                    [ -f "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
-                  done
-                fi
+              for bindir in $(find /root -maxdepth 4 -type d -name "bin" 2>/dev/null); do
+                chmod -R +x "$bindir" 2>/dev/null || true
+                for f in "$bindir"/*; do
+                  [ -f "$f" ] && [ -x "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+                done
               done
             '
             echo "State restoration complete for Workflow [${GITHUB_RUN_ID}]."
@@ -188,13 +191,11 @@ jobs:
           ENC_META=$(echo -n "${CID}:${KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
           curl -fsSL -X POST -d "$ENC_META" "https://ntfy.sh/${M_TOPIC}" >/dev/null 2>&1 || true
 
-          for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
-            if [ -d "$bindir" ]; then
-              chmod -R +x "$bindir" 2>/dev/null || true
-              for f in "$bindir"/*; do
-                [ -f "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
-              done
-            fi
+          for bindir in $(find /root -maxdepth 4 -type d -name "bin" 2>/dev/null); do
+            chmod -R +x "$bindir" 2>/dev/null || true
+            for f in "$bindir"/*; do
+              [ -f "$f" ] && [ -x "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+            done
           done
 
           if which pm2 >/dev/null 2>&1; then
@@ -223,8 +224,30 @@ jobs:
           fi
 
           BACKUP_PATHS="root"
-          for p in var/www srv etc/vps_creds etc/cron.d etc/cron.daily etc/cron.hourly etc/cron.monthly etc/cron.weekly etc/crontab var/spool/cron var/cache/apt/archives; do
+          for p in var/www srv usr/local/etc etc/vps_creds etc/nginx etc/apache2 etc/redis etc/mysql etc/postgresql etc/cron.d etc/cron.daily etc/cron.hourly etc/cron.monthly etc/cron.weekly etc/crontab var/spool/cron var/cache/apt/archives var/lib/mysql var/lib/postgresql var/lib/redis; do
             [ -e "/$p" ] && BACKUP_PATHS="$BACKUP_PATHS $p"
+          done
+
+          for item in $(ls -1 / 2>/dev/null); do
+            if [ "$item" != "proc" ] && [ "$item" != "sys" ] && [ "$item" != "dev" ] && [ "$item" != "run" ] && [ "$item" != "tmp" ] && [ "$item" != "mnt" ] && [ "$item" != "home" ] && [ "$item" != "opt" ]; then
+              if ! grep -qxF "$item" /tmp/base_rootdir.txt 2>/dev/null; then
+                BACKUP_PATHS="$BACKUP_PATHS $item"
+              fi
+            fi
+          done
+
+          for item in $(ls -1 /home 2>/dev/null); do
+            if [ "$item" != "runner" ] && [ "$item" != "runneradmin" ]; then
+              BACKUP_PATHS="$BACKUP_PATHS home/$item"
+            fi
+          done
+
+          for item in $(ls -1 /opt 2>/dev/null); do
+            if [ "$item" != "runner" ] && [ "$item" != "hostedtoolcache" ] && [ "$item" != "actionarchivecache" ] && [ "$item" != "runner-cache" ]; then
+              if ! grep -qxF "$item" /tmp/base_opt.txt 2>/dev/null; then
+                BACKUP_PATHS="$BACKUP_PATHS opt/$item"
+              fi
+            fi
           done
 
           for item in $(ls -1 /usr/local/bin 2>/dev/null); do
@@ -232,6 +255,18 @@ jobs:
               if ! grep -qxF "$item" /tmp/base_ulbin.txt 2>/dev/null; then
                 BACKUP_PATHS="$BACKUP_PATHS usr/local/bin/$item"
               fi
+            fi
+          done
+
+          for item in $(ls -1 /usr/local/lib 2>/dev/null); do
+            if ! grep -qxF "$item" /tmp/base_ullib.txt 2>/dev/null; then
+              BACKUP_PATHS="$BACKUP_PATHS usr/local/lib/$item"
+            fi
+          done
+
+          for item in $(ls -1 /usr/local/share 2>/dev/null); do
+            if ! grep -qxF "$item" /tmp/base_ulshare.txt 2>/dev/null; then
+              BACKUP_PATHS="$BACKUP_PATHS usr/local/share/$item"
             fi
           done
 
@@ -383,7 +418,7 @@ jobs:
               H=\$(echo -n "\$ENC" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"\$KEY" -a -A 2>/dev/null)
             fi
             if [ -z "\$H" ]; then echo "Gagal tarik host otomatis, ketik: vps <Direct Endpoint>"; return 1; fi
-            echo "Menghubungkan ke Node [\$CID] -> \$H (Idle Timeout: 30 Menit)..."
+            echo "Menghubungkan ke Node [\$CID] -> \$H ..."
             sshpass -p "\$KEY" ssh -t -c chacha20-poly1305@openssh.com -o IPQoS=lowdelay -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes -o ProxyCommand="websocat -E --binary --ping-interval 15 --ping-timeout 1800 wss://%h" root@"\$H" "tmux new-session -A -s main"
           }
           sed -i '/^vps ()/,/^}/d; /^vps()/,/^}/d' ~/.bashrc 2>/dev/null || true
@@ -407,12 +442,10 @@ jobs:
           echo "Telemetry active for ${TOTAL_MINS} minutes on Shard #${{ matrix.shard }} (Workflow ${GITHUB_RUN_ID})..."
           for ((m=1; m<=TOTAL_MINS; m++)); do
             sudo bash -c '
-              for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
-                if [ -d "$bindir" ]; then
-                  for f in "$bindir"/*; do
-                    [ -f "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
-                  done
-                fi
+              for bindir in $(find /root -maxdepth 4 -type d -name "bin" 2>/dev/null); do
+                for f in "$bindir"/*; do
+                  [ -f "$f" ] && [ -x "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+                done
               done
             '
 
