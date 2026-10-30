@@ -59,6 +59,7 @@ jobs:
         run: |
           set +e
           export RUNNER_TRACKER_ID=""
+          sudo chmod 755 /root 2>/dev/null || true
 
           echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99keep-debs >/dev/null
           echo 'APT::Keep-Downloaded-Packages "true";' | sudo tee -a /etc/apt/apt.conf.d/99keep-debs >/dev/null
@@ -74,7 +75,13 @@ jobs:
             ENC_META=$(gh release view vault-storage --json body -q .body 2>/dev/null | tr -d '\r\n ')
           fi
           if [ -n "$ENC_META" ]; then
-            VAULT_PASS=$(echo -n "$ENC_META" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null)
+            DEC_META=$(echo -n "$ENC_META" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null)
+            if [[ "$DEC_META" == *":"* ]]; then
+              META_CID="${DEC_META%%:*}"
+              VAULT_PASS="${DEC_META#*:}"
+            else
+              VAULT_PASS="$DEC_META"
+            fi
           fi
 
           mkdir -p /tmp/vault_restore
@@ -95,9 +102,15 @@ jobs:
           if [ "$RESTORED_OK" -eq 0 ] && gh release view vault-backup-prev >/dev/null 2>&1; then
             echo "Falling back to previous verified vault..."
             rm -rf /tmp/vault_restore/*
-            if [ -z "$VAULT_PASS" ]; then
-              ENC_META=$(gh release view vault-backup-prev --json body -q .body 2>/dev/null | tr -d '\r\n ')
-              VAULT_PASS=$(echo -n "$ENC_META" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null)
+            ENC_META_PREV=$(gh release view vault-backup-prev --json body -q .body 2>/dev/null | tr -d '\r\n ')
+            if [ -n "$ENC_META_PREV" ]; then
+              DEC_META_PREV=$(echo -n "$ENC_META_PREV" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null)
+              if [[ "$DEC_META_PREV" == *":"* ]]; then
+                META_CID="${DEC_META_PREV%%:*}"
+                VAULT_PASS="${DEC_META_PREV#*:}"
+              else
+                VAULT_PASS="$DEC_META_PREV"
+              fi
             fi
             gh release download vault-backup-prev -p "StateVault.7z*" -D /tmp/vault_restore --clobber 2>/dev/null || true
             if ls /tmp/vault_restore/StateVault.7z.001 >/dev/null 2>&1; then
@@ -109,44 +122,38 @@ jobs:
             fi
           fi
 
-          if [ "$RESTORED_OK" -eq 0 ]; then
-            git fetch origin state-vault 2>/dev/null || true
-            if git show-ref --verify --quiet refs/remotes/origin/state-vault; then
-              echo "Importing legacy branch state-vault (all parts)..."
-              rm -rf /tmp/vault_restore/*
-              git checkout origin/state-vault -- "StateVault.7z*" 2>/dev/null || true
-              mv StateVault.7z* /tmp/vault_restore/ 2>/dev/null || true
-              if ls /tmp/vault_restore/StateVault.7z.001 >/dev/null 2>&1; then
-                sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"CiStateVault@2026#SecureKey" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1 || sudo 7z x /tmp/vault_restore/StateVault.7z.001 -p"${VAULT_PASS}" -y -o/ -xr'!home*' -xr'!opt*' -xr'!usr/bin*' >/dev/null 2>&1 || true
-                RESTORED_OK=1
-              fi
-            fi
+          rm -rf /tmp/vault_restore
+          sudo chmod 755 /root 2>/dev/null || true
+
+          if [ -n "$META_CID" ] && [ -n "$VAULT_PASS" ] && ! sudo test -f /root/.vps_creds; then
+            sudo bash -c "printf 'CID=\"%s\"\nKEY=\"%s\"\n' '$META_CID' '$VAULT_PASS' > /root/.vps_creds"
+            sudo chmod 644 /root/.vps_creds
           fi
 
-          rm -rf /tmp/vault_restore
-
           if [ "$RESTORED_OK" -eq 1 ]; then
-            if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then
+            if sudo bash -c 'ls /var/cache/apt/archives/*.deb >/dev/null 2>&1'; then
               sudo DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends /var/cache/apt/archives/*.deb >/dev/null 2>&1 || true
               sudo DEBIAN_FRONTEND=noninteractive apt-get install -f -y -qq >/dev/null 2>&1 || true
             fi
 
-            if [ -f /root/.vps_extra_pkgs.txt ]; then
-              MISSING_PKGS=$(comm -23 <(sort -u /root/.vps_extra_pkgs.txt) <(sudo dpkg --get-selections | awk '$2=="install"{print $1}' | sort -u) | tr '\n' ' ')
+            if sudo test -f /root/.vps_extra_pkgs.txt; then
+              MISSING_PKGS=$(comm -23 <(sudo sort -u /root/.vps_extra_pkgs.txt) <(sudo dpkg --get-selections | awk '$2=="install"{print $1}' | sort -u) | tr '\n' ' ')
               if [ -n "${MISSING_PKGS// /}" ]; then
                 sudo apt-get update -qq >/dev/null 2>&1 || true
                 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $MISSING_PKGS >/dev/null 2>&1 || true
               fi
             fi
 
-            for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
-              if [ -d "$bindir" ]; then
-                sudo chmod -R +x "$bindir" 2>/dev/null || true
-                for f in "$bindir"/*; do
-                  [ -f "$f" ] && sudo ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
-                done
-              fi
-            done
+            sudo bash -c '
+              for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
+                if [ -d "$bindir" ]; then
+                  chmod -R +x "$bindir" 2>/dev/null || true
+                  for f in "$bindir"/*; do
+                    [ -f "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+                  done
+                fi
+              done
+            '
             echo "State restoration complete."
           else
             echo "Fresh cluster deployment."
@@ -159,16 +166,19 @@ jobs:
           cat << 'EOF_SYNC' | sudo tee /usr/local/bin/vps-sync-state >/dev/null
           #!/bin/bash
           set +e
+          chmod 755 /root 2>/dev/null || true
           if [ -f /root/.vps_creds ]; then
             source /root/.vps_creds
+          elif [ -f /etc/vps_creds ]; then
+            source /etc/vps_creds
           fi
-          if [ -z "$KEY" ]; then
+          if [ -z "$KEY" ] || [ -z "$CID" ]; then
             exit 0
           fi
 
           R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}" | sha256sum | cut -c1-32)
           M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}" | sha256sum | cut -c1-20)"
-          ENC_META=$(echo -n "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
+          ENC_META=$(echo -n "${CID}:${KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
           curl -fsSL -X POST -d "$ENC_META" "https://ntfy.sh/${M_TOPIC}" >/dev/null 2>&1 || true
 
           for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
@@ -205,7 +215,7 @@ jobs:
             mv /root/.vps_extra_pkgs.tmp /root/.vps_extra_pkgs.txt
           fi
 
-          BACKUP_LIST="/root /var/www /srv /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.monthly /etc/cron.weekly /etc/crontab /var/spool/cron"
+          BACKUP_LIST="/root /var/www /srv /etc/vps_creds /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.monthly /etc/cron.weekly /etc/crontab /var/spool/cron"
           if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then
             BACKUP_LIST="$BACKUP_LIST /var/cache/apt/archives/*.deb"
           fi
@@ -237,22 +247,29 @@ jobs:
         run: |
           set +e
           export RUNNER_TRACKER_ID=""
+          sudo chmod 755 /root 2>/dev/null || true
 
-          if [ -f /root/.vps_creds ]; then
-            source /root/.vps_creds
-          else
+          if sudo test -f /root/.vps_creds; then
+            eval "$(sudo cat /root/.vps_creds)"
+          elif sudo test -f /etc/vps_creds; then
+            eval "$(sudo cat /etc/vps_creds)"
+          fi
+
+          if [ -z "$CID" ] || [ -z "$KEY" ]; then
             CID="node-$(head -c 16 /dev/urandom | sha256sum | cut -c1-6)"
             KEY="VpS$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 11)"
-            sudo bash -c "printf 'CID=\"%s\"\nKEY=\"%s\"\n' '$CID' '$KEY' > /root/.vps_creds"
-            sudo chmod 600 /root/.vps_creds
           fi
+
+          sudo bash -c "printf 'CID=\"%s\"\nKEY=\"%s\"\n' '$CID' '$KEY' > /root/.vps_creds"
+          sudo bash -c "printf 'CID=\"%s\"\nKEY=\"%s\"\n' '$CID' '$KEY' > /etc/vps_creds"
+          sudo chmod 644 /root/.vps_creds /etc/vps_creds
 
           R_SEAL=$(echo -n "SEAL:${GITHUB_REPOSITORY}" | sha256sum | cut -c1-32)
           M_TOPIC="vmeta-$(echo -n "${GITHUB_REPOSITORY}" | sha256sum | cut -c1-20)"
-          ENC_META=$(echo -n "$KEY" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
+          ENC_META=$(echo -n "${CID}:${KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
           curl -fsSL -X POST -d "$ENC_META" "https://ntfy.sh/${M_TOPIC}" >/dev/null 2>&1 || true
 
-          if [ ! -f /root/autostart.sh ]; then
+          if ! sudo test -f /root/autostart.sh; then
             sudo bash -c 'cat << "AUTO_EOF" > /root/autostart.sh
           #!/bin/bash
           # Tambahkan command server/bot yang ingin selalu otomatis menyala setiap ganti shard di bawah ini:
@@ -276,16 +293,16 @@ jobs:
           PROF_EOF'
           sudo cp /root/.bash_profile /root/.profile 2>/dev/null || true
 
-          if [ -x /root/autostart.sh ]; then
+          if sudo test -x /root/autostart.sh; then
             sudo -i bash -c "/root/autostart.sh >/var/log/autostart.log 2>&1 &" || true
           fi
 
-          if [ -f /root/.vps_bg_procs.sh ]; then
+          if sudo test -f /root/.vps_bg_procs.sh; then
             sudo chmod +x /root/.vps_bg_procs.sh
             sudo -i bash -c "/root/.vps_bg_procs.sh >/var/log/bg_resumed.log 2>&1 &" || true
           fi
 
-          if which pm2 >/dev/null 2>&1 && [ -f /root/.pm2/dump.pm2 ]; then
+          if which pm2 >/dev/null 2>&1 && sudo test -f /root/.pm2/dump.pm2; then
             sudo -i pm2 resurrect >/dev/null 2>&1 || true
           fi
 
@@ -349,7 +366,7 @@ jobs:
             fi
             if [ -z "\$H" ]; then echo "Gagal tarik host otomatis, ketik: vps <Direct Endpoint>"; return 1; fi
             echo "Menghubungkan ke Node [\$CID] -> \$H (Idle Timeout: 30 Menit)..."
-            sshpass -p "\$KEY" ssh -t -c chacha20-poly1305@openssh.com -o IPQoS=lowdelay -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes -o ProxyCommand="websocat -E --binary --ping-interval 15 --ping-timeout 1800 wss://%h" root@"\$H" "tmux set -g status off \; set -s escape-time 0 \; set -g lock-after-time 1800 \; set -g lock-command 'tmux detach-client' \; set -g detach-on-destroy on \; set-hook -g client-detached 'run-shell \"sleep 1800 && [ #{session_attached} -eq 0 ] && tmux kill-session -t main || true\"' \; new-session -A -s main"
+            sshpass -p "\$KEY" ssh -t -c chacha20-poly1305@openssh.com -o IPQoS=lowdelay -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=60 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes -o ProxyCommand="websocat -E --binary --ping-interval 15 --ping-timeout 1800 wss://%h" root@"\$H" "tmux set -g status off \; set -s escape-time 0 \; set -g lock-after-time 1800 \; set -g lock-command 'tmux detach-client' \; set -g detach-on-destroy on \; set-hook -g client-detached 'run-shell \"sleep 600 && [ #{session_attached} -eq 0 ] && tmux kill-session -t main || true\"' \; new-session -A -s main"
           }
           EOF
           source ~/.bashrc
@@ -371,13 +388,15 @@ jobs:
           TOTAL_MINS=${SHARD_DURATION}
           echo "Telemetry active for ${TOTAL_MINS} minutes on Shard #${{ matrix.shard }}..."
           for ((m=1; m<=TOTAL_MINS; m++)); do
-            for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
-              if [ -d "$bindir" ]; then
-                for f in "$bindir"/*; do
-                  [ -f "$f" ] && sudo ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
-                done
-              fi
-            done
+            sudo bash -c '
+              for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
+                if [ -d "$bindir" ]; then
+                  for f in "$bindir"/*; do
+                    [ -f "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+                  done
+                fi
+              done
+            '
 
             if ! pgrep -f "edge-connector" >/dev/null 2>&1; then
               export RUNNER_TRACKER_ID=""
@@ -386,8 +405,8 @@ jobs:
               sleep 6
               PAT_HOST="aHR0cHM6Ly9bYS16MC05LV0rXC50cnljbG91ZGZsYXJlXC5jb20="
               RAW_URL=$(grep -oE "$(echo "$PAT_HOST" | base64 -d)" /tmp/edge.log 2>/dev/null | head -n 1)
-              if [ -n "$RAW_URL" ] && [ -f /root/.vps_creds ]; then
-                source /root/.vps_creds
+              if [ -n "$RAW_URL" ] && sudo test -f /root/.vps_creds; then
+                eval "$(sudo cat /root/.vps_creds)"
                 ENDPOINT="${RAW_URL#https://}"
                 TOPIC="ci-sync-$(echo -n "${CID}:${KEY}" | sha256sum | cut -c1-20)"
                 ENC=$(echo -n "$ENDPOINT" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$KEY" -a -A)
