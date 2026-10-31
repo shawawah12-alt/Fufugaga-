@@ -60,25 +60,30 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Initialize System Dependencies & Baseline Snapshot
+      - name: Unlock 110GB+ Disk Space & Initialize Dependencies
         run: |
+          # Hapus paralel ~95GB SDK bloatware bawaan GitHub Runner agar disk lega ~110GB+
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /opt/ghc /usr/local/.ghcup &
+          sudo rm -rf /opt/hostedtoolcache/CodeQL &
+          sudo rm -rf /usr/local/share/boost /usr/local/share/chromium* /usr/local/share/edge* &
+          sudo rm -rf /usr/local/julia* /usr/local/aws-cli /usr/local/aws-sam-cli &
+          sudo rm -rf /home/linuxbrew &
+
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             tmux openssh-server curl wget jq openssl zstd gzip tar rsync \
-            psmisc lsof cron iproute2 net-tools ca-certificates gnupg >/dev/null 2>&1
+            psmisc lsof cron iproute2 net-tools ca-certificates gnupg \
+            git unzip zip p7zip-full build-essential htop >/dev/null 2>&1
 
-          sudo mkdir -p /var/lib/ci_base /etc/vps_autostart
-          sudo chmod 755 /root /var/lib/ci_base /etc/vps_autostart
+          wait 2>/dev/null || true
 
-          if [ ! -s /var/lib/ci_base/base_pkgs.txt ]; then
-            dpkg-query -W -f='${Package}\n' | sort -u | sudo tee /var/lib/ci_base/base_pkgs.txt >/dev/null
-          fi
-          if [ ! -s /var/lib/ci_base/base_rootdir.txt ]; then
-            ls -1 / | sort -u | sudo tee /var/lib/ci_base/base_rootdir.txt >/dev/null
-          fi
-          if [ ! -s /var/lib/ci_base/base_etc_files.txt ]; then
-            sudo find /etc -maxdepth 2 -printf "%P\n" 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_etc_files.txt >/dev/null
-          fi
+          # Bersihkan variabel XDG_CONFIG_HOME=/home/runner/.config di /etc/environment yang bikin OpenCode bingung
+          sudo sed -i '/^HOME=/d; /^XDG_/d' /etc/environment 2>/dev/null || true
+
+          sudo mkdir -p /var/lib/ci_base /etc/vps_autostart /root/.config /root/.local/share /home/runner/.config /home/runner/.local/share
+          sudo chmod 755 /root /home/runner /var/lib/ci_base /etc/vps_autostart
 
           if [ ! -x /usr/local/bin/ws-bridge ]; then
             sudo curl -fsSL "https://github.com/vi/websocat/releases/download/v1.13.0/websocat.x86_64-unknown-linux-musl" -o /usr/local/bin/ws-bridge
@@ -88,10 +93,22 @@ jobs:
             sudo curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o /usr/local/bin/edge-connector
             sudo chmod +x /usr/local/bin/edge-connector
           fi
-          echo "System dependencies and baseline snapshot verified."
+
+          # Rekam baseline bawaan runner SEBELUM restore agar cuma data user yang di-backup
+          dpkg-query -W -f='${Package}\n' | sort -u | sudo tee /var/lib/ci_base/base_pkgs.txt >/dev/null
+          ls -1 / 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_rootdir.txt >/dev/null
+          ls -1 /home 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_home.txt >/dev/null
+          ls -1A /home/runner 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_homerunner.txt >/dev/null
+          ls -1 /opt 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_opt.txt >/dev/null
+          ls -1 /usr/local/bin 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_ulbin.txt >/dev/null
+          ls -1 /usr/local/lib 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_ullib.txt >/dev/null
+          ls -1 /usr/local/share 2>/dev/null | sort -u | sudo tee /var/lib/ci_base/base_ulshare.txt >/dev/null
+          df -h /
+          echo "System dependencies and 110GB+ workspace initialized."
 
       - name: Configure State Persistence Engine & Restore Workspace
         run: |
+          set +e
           VAULT_TAG="${GITHUB_RUN_ID}-vault"
           VAULT_PREV_TAG="${GITHUB_RUN_ID}-vault-prev"
           VAULT_TITLE="${GITHUB_RUN_ID} vault"
@@ -110,11 +127,39 @@ jobs:
           EOF
           sudo chmod 600 /etc/vps_runtime_env
 
+          # Helper penyatu folder OpenCode & AI Agent antara /root dan /home/runner
+          sudo tee /usr/local/bin/vps-unify-homes >/dev/null <<'UNIFY_EOF'
+          #!/bin/bash
+          set +e
+          mkdir -p /root/.config /root/.local/share /root/.local/state /home/runner/.config /home/runner/.local/share /home/runner/.local/state
+
+          for subpath in ".opencode" ".claude" ".agents" ".config/opencode" ".config/claude" ".local/share/opencode" ".local/state/opencode"; do
+            R_PATH="/root/$subpath"
+            H_PATH="/home/runner/$subpath"
+            mkdir -p "$(dirname "$R_PATH")" "$(dirname "$H_PATH")"
+
+            # Jika di /home/runner adalah folder asli (bukan symlink), gabungkan isinya ke /root lalu jadikan symlink
+            if [ -d "$H_PATH" ] && [ ! -L "$H_PATH" ]; then
+              mkdir -p "$R_PATH"
+              rsync -a "$H_PATH"/ "$R_PATH"/ 2>/dev/null || cp -rn "$H_PATH"/. "$R_PATH"/ 2>/dev/null || true
+              rm -rf "$H_PATH"
+              ln -s "$R_PATH" "$H_PATH"
+            elif [ ! -e "$H_PATH" ] && [ ! -L "$H_PATH" ]; then
+              mkdir -p "$R_PATH"
+              ln -s "$R_PATH" "$H_PATH"
+            fi
+          done
+          UNIFY_EOF
+          sudo chmod +x /usr/local/bin/vps-unify-homes
+
           sudo tee /usr/local/bin/vps-sync-state >/dev/null <<'SYNC_EOF'
           #!/bin/bash
-          set -e
+          set +e
           exec 9>/run/vps-sync.lock
           flock -w 180 9 || exit 0
+
+          chmod 755 /root /home/runner 2>/dev/null || true
+          /usr/local/bin/vps-unify-homes >/dev/null 2>&1 || true
 
           source /etc/vps_runtime_env
           if [ -f /root/.vps_creds ]; then
@@ -124,93 +169,185 @@ jobs:
           else
             exit 0
           fi
-          [ -z "$KEY" ] && exit 0
+          [ -z "$KEY" ] || [ -z "$CID" ] && exit 0
 
           mkdir -p /etc/vps_autostart /var/lib/ci_base
 
+          # Simpan daftar package apt yang diinstall user
           dpkg-query -W -f='${Package}\n' | sort -u > /tmp/curr_pkgs.txt
           if [ -s /var/lib/ci_base/base_pkgs.txt ]; then
-            comm -13 /var/lib/ci_base/base_pkgs.txt /tmp/curr_pkgs.txt > /etc/vps_autostart/installed_pkgs.txt || true
+            comm -13 /var/lib/ci_base/base_pkgs.txt /tmp/curr_pkgs.txt > /tmp/new_pkgs.txt
+            cat /etc/vps_autostart/installed_pkgs.txt /tmp/new_pkgs.txt 2>/dev/null | sort -u > /tmp/installed_pkgs.tmp
+            mv -f /tmp/installed_pkgs.tmp /etc/vps_autostart/installed_pkgs.txt
+          fi
+
+          # Symlink otomatis semua binary di /root & /home/runner (termasuk opencode, bun, cargo, go) ke /usr/local/bin
+          for bindir in $(find /root /home/runner -maxdepth 4 -type d -name "bin" 2>/dev/null | grep -vE 'actions-runner|_work|\.rustup|\.dotnet') /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin /home/runner/.opencode/bin /home/runner/.local/bin /home/runner/.bun/bin; do
+            if [ -d "$bindir" ]; then
+              chmod -R +x "$bindir" 2>/dev/null || true
+              for f in "$bindir"/*; do
+                [ -f "$f" ] && [ -x "$f" ] && ln -sf "$f" /usr/local/bin/ 2>/dev/null || true
+              done
+            fi
+          done
+
+          if which pm2 >/dev/null 2>&1; then
+            pm2 save >/dev/null 2>&1 || true
           fi
 
           find /etc/systemd/system/multi-user.target.wants -type l -printf "%f\n" 2>/dev/null | sort -u > /etc/vps_autostart/enabled_services.txt || true
 
-          printf '#!/bin/bash\n' > /etc/vps_autostart/bg_procs.sh
+          # Rekam background process user yang sedang jalan
+          cat << 'BG_EOF' > /etc/vps_autostart/bg_procs.sh
+          #!/bin/bash
+          export PATH="/root/.opencode/bin:/root/.local/bin:/root/.bun/bin:/root/.cargo/bin:/root/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          BG_EOF
           ps -eo pid,user,comm,args --no-headers | while read -r pid usr comm args; do
             case "$comm" in
-              systemd*|sshd|ws-bridge|edge-connector|tmux*|bash|sh|ps|grep|awk|sed|cut|tr|sort|uniq|tee|cat|sleep|Runner.*|node|dockerd|containerd*|vps-sync-state|flock|tar|gzip|openssl|split|gh)
+              systemd*|sshd|ws-bridge|edge-connector|tmux*|bash|sh|ps|grep|awk|sed|cut|tr|sort|uniq|tee|cat|sleep|Runner.*|dockerd|containerd*|vps-sync-state|flock|tar|gzip|zstd|openssl|split|gh)
                 continue ;;
             esac
-            if [[ "$args" == *"/home/runner"* ]] || [[ "$args" == *"/opt/runner"* ]] || [[ "$args" == *"actions-runner"* ]]; then
+            if [[ "$args" == *"actions-runner"* ]] || [[ "$args" == *"Runner.Listener"* ]] || [[ "$args" == *"Runner.Worker"* ]] || [[ "$args" == *"ws-bridge"* ]] || [[ "$args" == *"edge-connector"* ]]; then
               continue
             fi
             proc_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || echo "/root")
             if [[ "$proc_cwd" == "/root"* ]] || [[ "$proc_cwd" == "/home"* ]] || [[ "$proc_cwd" == "/opt"* ]] || [[ "$proc_cwd" == "/var/www"* ]] || [[ "$proc_cwd" == "/srv"* ]]; then
-              printf 'cd %q && nohup %s >/dev/null 2>&1 &\n' "$proc_cwd" "$args" >> /etc/vps_autostart/bg_procs.sh
+              printf 'cd %q && nohup %s >/var/log/auto_%s.log 2>&1 &\n' "$proc_cwd" "$args" "$comm" >> /etc/vps_autostart/bg_procs.sh
             fi
           done
           chmod +x /etc/vps_autostart/bg_procs.sh
 
-          EXTRA_ROOT_DIRS=""
-          for d in $(ls -1 / 2>/dev/null); do
-            case "$d" in
-              bin|boot|dev|etc|home|lib|lib32|lib64|libx32|lost+found|media|mnt|opt|proc|root|run|sbin|snap|srv|sys|tmp|usr|var)
+          # Susun daftar path backup milik user (termasuk /root DAN data di /home/runner)
+          BACKUP_TARGETS="root etc/vps_creds etc/vps_autostart etc/environment"
+          for target in home/runner/.config home/runner/.local home/runner/.opencode home/runner/.claude home/runner/.agents var/www srv usr/local/etc etc/nginx etc/apache2 etc/redis etc/mysql etc/postgresql etc/cron.d etc/cron.daily etc/cron.hourly etc/cron.monthly etc/cron.weekly etc/crontab var/spool/cron var/lib/mysql var/lib/postgresql var/lib/redis var/lib/mongodb; do
+            [ -e "/$target" ] || [ -L "/$target" ] && BACKUP_TARGETS="$BACKUP_TARGETS $target"
+          done
+
+          # Folder baru di /
+          for item in $(ls -1 / 2>/dev/null); do
+            case "$item" in
+              proc|sys|dev|run|tmp|mnt|media|lost+found|home|opt|usr|var|etc|root|bin|boot|lib|lib32|lib64|libx32|sbin|snap)
                 continue ;;
               *)
-                EXTRA_ROOT_DIRS="$EXTRA_ROOT_DIRS $d" ;;
+                if ! grep -qxF "$item" /var/lib/ci_base/base_rootdir.txt 2>/dev/null; then
+                  [ -e "/$item" ] && BACKUP_TARGETS="$BACKUP_TARGETS $item"
+                fi
+                ;;
             esac
           done
 
-          BACKUP_TARGETS="root etc/vps_creds etc/vps_autostart etc/environment usr/local var/cache/apt/archives"
-          for target in home opt var/www srv var/lib/mysql var/lib/postgresql var/lib/redis var/lib/mongodb etc/cron.d etc/cron.daily etc/systemd/system var/spool/cron/crontabs; do
-            [ -e "/$target" ] && BACKUP_TARGETS="$BACKUP_TARGETS $target"
+          # Semua folder/file kerjaan di /home dan /home/runner (kecuali mesin internal GitHub Actions)
+          for item in $(ls -1 /home 2>/dev/null); do
+            case "$item" in
+              runneradmin|linuxbrew) continue ;;
+              runner)
+                for ritem in $(ls -1A /home/runner 2>/dev/null); do
+                  case "$ritem" in
+                    work|_work|actions-runner*|runners|*.sh|.*cache*|.dotnet|.rustup|.cargo|.npm|.config|.local|.opencode|.claude|.agents|.bash_logout|.bashrc|.profile) continue ;;
+                    *)
+                      if ! grep -qxF "$ritem" /var/lib/ci_base/base_homerunner.txt 2>/dev/null; then
+                        [ -e "/home/runner/$ritem" ] && BACKUP_TARGETS="$BACKUP_TARGETS home/runner/$ritem"
+                      fi
+                      ;;
+                  esac
+                done
+                ;;
+              *)
+                if ! grep -qxF "$item" /var/lib/ci_base/base_home.txt 2>/dev/null; then
+                  [ -e "/home/$item" ] && BACKUP_TARGETS="$BACKUP_TARGETS home/$item"
+                fi
+                ;;
+            esac
           done
-          for d in $EXTRA_ROOT_DIRS; do
-            [ -e "/$d" ] && BACKUP_TARGETS="$BACKUP_TARGETS $d"
+
+          # Folder baru di /opt (kecuali bawaan runner)
+          for item in $(ls -1 /opt 2>/dev/null); do
+            case "$item" in
+              runner|hostedtoolcache|actionarchivecache|runner-cache|pipx|az|google|microsoft|containerd|ghc|pypy*) continue ;;
+              *)
+                if ! grep -qxF "$item" /var/lib/ci_base/base_opt.txt 2>/dev/null; then
+                  [ -e "/opt/$item" ] && BACKUP_TARGETS="$BACKUP_TARGETS opt/$item"
+                fi
+                ;;
+            esac
           done
 
-          rm -rf /tmp/vault_out
-          mkdir -p /tmp/vault_out
+          # Hanya item baru di /usr/local/bin, /usr/local/lib, /usr/local/share
+          for item in $(ls -1 /usr/local/bin 2>/dev/null); do
+            case "$item" in
+              vps-sync-state|vps-restore-runtime|vps-unify-homes|ws-bridge|edge-connector) continue ;;
+              *)
+                if ! grep -qxF "$item" /var/lib/ci_base/base_ulbin.txt 2>/dev/null; then
+                  [ -e "/usr/local/bin/$item" ] && BACKUP_TARGETS="$BACKUP_TARGETS usr/local/bin/$item"
+                fi
+                ;;
+            esac
+          done
+          for item in $(ls -1 /usr/local/lib 2>/dev/null); do
+            if ! grep -qxF "$item" /var/lib/ci_base/base_ullib.txt 2>/dev/null; then
+              [ -e "/usr/local/lib/$item" ] && BACKUP_TARGETS="$BACKUP_TARGETS usr/local/lib/$item"
+            fi
+          done
+          for item in $(ls -1 /usr/local/share 2>/dev/null); do
+            if ! grep -qxF "$item" /var/lib/ci_base/base_ulshare.txt 2>/dev/null; then
+              [ -e "/usr/local/share/$item" ] && BACKUP_TARGETS="$BACKUP_TARGETS usr/local/share/$item"
+            fi
+          done
 
-          echo -n "${CID}:${KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A > /tmp/vault_out/vault.meta
+          OUT_DIR="/tmp/vault_out"
+          if [ -d /mnt ] && [ "$(df --output=avail /mnt 2>/dev/null | tail -1)" -gt 20971520 ] 2>/dev/null; then
+            OUT_DIR="/mnt/vault_out"
+          fi
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
 
-          tar -I 'gzip -1' -cpf - -C / \
-            --exclude='home/runner*' \
-            --exclude='opt/runner*' \
-            --exclude='opt/hostedtoolcache*' \
-            --exclude='opt/pipx*' \
-            --exclude='opt/az*' \
-            --exclude='opt/google*' \
-            --exclude='opt/microsoft*' \
-            --exclude='opt/containerd*' \
+          ENC_META=$(echo -n "${CID}:${KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
+          echo -n "$ENC_META" > "$OUT_DIR/vault.meta"
+          curl -fsSL -X POST -d "$ENC_META" "https://ntfy.sh/${M_TOPIC}" >/dev/null 2>&1 || true
+
+          # Kompresi paralel semua core CPU (zstd -1 -T0)
+          tar --ignore-failed-read --warning=no-file-changed -I 'zstd -1 -T0' -cpf - -C / \
             --exclude='root/.cache/Cypress*' \
             --exclude='root/.cache/ms-playwright*' \
+            --exclude='root/.cache/pip*' \
+            --exclude='root/.npm/_cacache*' \
+            --exclude='home/runner/.cache*' \
             --exclude='*.sock' \
             $BACKUP_TARGETS 2>/dev/null | \
             openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$KEY" | \
-            split -b 1900M -d -a 3 - /tmp/vault_out/StateVault.vlt.
+            split -b 1900M -d -a 3 - "$OUT_DIR/StateVault.vlt."
 
-          if ls /tmp/vault_out/StateVault.vlt.* >/dev/null 2>&1; then
+          if ls "$OUT_DIR"/StateVault.vlt.000 >/dev/null 2>&1 && [ -s "$OUT_DIR/StateVault.vlt.000" ]; then
             if gh release view "$VAULT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release delete "$VAULT_PREV_TAG" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
-              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/$(gh release view "$VAULT_TAG" --repo "$GITHUB_REPOSITORY" --json id -q .id)" -f tag_name="$VAULT_PREV_TAG" >/dev/null 2>&1 || true
+              gh release delete "$VAULT_PREV_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag >/dev/null 2>&1 || true
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${VAULT_PREV_TAG}" >/dev/null 2>&1 || true
+              OLD_REL_ID=$(gh release view "$VAULT_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId -q .databaseId 2>/dev/null || true)
+              if [ -n "$OLD_REL_ID" ]; then
+                gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${OLD_REL_ID}" \
+                  -f tag_name="$VAULT_PREV_TAG" -f name="${VAULT_TITLE} prev" >/dev/null 2>&1 || true
+              fi
             fi
-            if gh release create "$VAULT_TAG" /tmp/vault_out/StateVault.vlt.* /tmp/vault_out/vault.meta \
-              --repo "$GITHUB_REPOSITORY" --title "$VAULT_TITLE" --notes "Automated CI Workspace Snapshot (Run ${GITHUB_RUN_ID})" >/dev/null 2>&1; then
-              gh release delete "$VAULT_PREV_TAG" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
+
+            gh release delete "$VAULT_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag >/dev/null 2>&1 || true
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${VAULT_TAG}" >/dev/null 2>&1 || true
+
+            if gh release create "$VAULT_TAG" "$OUT_DIR"/StateVault.vlt.* "$OUT_DIR/vault.meta" \
+              --repo "$GITHUB_REPOSITORY" --title "$VAULT_TITLE" --notes "$ENC_META" --prerelease >/dev/null 2>&1; then
+              echo "State vault [$VAULT_TAG] synchronized."
             fi
           fi
-          rm -rf /tmp/vault_out
+          rm -rf "$OUT_DIR"
+          exit 0
           SYNC_EOF
           sudo chmod +x /usr/local/bin/vps-sync-state
 
           sudo tee /usr/local/bin/vps-restore-runtime >/dev/null <<'REST_EOF'
           #!/bin/bash
+          set +e
           export DEBIAN_FRONTEND=noninteractive
-          if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then
-            dpkg -i --force-depends /var/cache/apt/archives/*.deb >/dev/null 2>&1 || true
-            apt-get install -f -y -qq >/dev/null 2>&1 || true
-          fi
+          sed -i '/^HOME=/d; /^XDG_/d' /etc/environment 2>/dev/null || true
+          /usr/local/bin/vps-unify-homes >/dev/null 2>&1 || true
+
           if [ -s /etc/vps_autostart/installed_pkgs.txt ]; then
             MISSING_PKGS=$(comm -23 <(sort -u /etc/vps_autostart/installed_pkgs.txt) <(dpkg-query -W -f='${Package}\n' | sort -u) | tr '\n' ' ')
             if [ -n "${MISSING_PKGS// /}" ]; then
@@ -218,8 +355,9 @@ jobs:
               apt-get install -y -qq $MISSING_PKGS >/dev/null 2>&1 || true
             fi
           fi
-          for bindir in /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin; do
+          for bindir in $(find /root /home/runner -maxdepth 4 -type d -name "bin" 2>/dev/null | grep -vE 'actions-runner|_work|\.rustup|\.dotnet') /root/.opencode/bin /root/.local/bin /root/.bun/bin /root/.cargo/bin /root/go/bin /home/runner/.opencode/bin /home/runner/.local/bin /home/runner/.bun/bin; do
             if [ -d "$bindir" ]; then
+              chmod -R +x "$bindir" 2>/dev/null || true
               for binfile in "$bindir"/*; do
                 if [ -f "$binfile" ] && [ -x "$binfile" ]; then
                   ln -sf "$binfile" "/usr/local/bin/$(basename "$binfile")" 2>/dev/null || true
@@ -227,7 +365,13 @@ jobs:
               done
             fi
           done
-          printf 'export PATH="/root/.opencode/bin:/root/.local/bin:/root/.bun/bin:/root/.cargo/bin:/root/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"\n' > /etc/profile.d/99-custom-paths.sh
+          cat << 'PROF_EOF' > /etc/profile.d/99-custom-paths.sh
+          export HOME="/root"
+          export XDG_CONFIG_HOME="/root/.config"
+          export XDG_DATA_HOME="/root/.local/share"
+          export XDG_STATE_HOME="/root/.local/state"
+          export PATH="/root/.opencode/bin:/root/.local/bin:/root/.bun/bin:/root/.cargo/bin:/root/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          PROF_EOF
           chmod 644 /etc/profile.d/99-custom-paths.sh
           systemctl daemon-reload >/dev/null 2>&1 || true
           if [ -s /etc/vps_autostart/enabled_services.txt ]; then
@@ -235,8 +379,14 @@ jobs:
               [ -n "$svc" ] && systemctl start "$svc" >/dev/null 2>&1 || true
             done < /etc/vps_autostart/enabled_services.txt
           fi
+          if [ -x /root/autostart.sh ]; then
+            sudo -i bash -c "/root/autostart.sh >/var/log/autostart.log 2>&1 &" || true
+          fi
           if [ -x /etc/vps_autostart/bg_procs.sh ]; then
-            /etc/vps_autostart/bg_procs.sh >/dev/null 2>&1 || true
+            sudo -i bash -c "/etc/vps_autostart/bg_procs.sh >/var/log/bg_resumed.log 2>&1 &" || true
+          fi
+          if which pm2 >/dev/null 2>&1 && [ -f /root/.pm2/dump.pm2 ]; then
+            sudo -i pm2 resurrect >/dev/null 2>&1 || true
           fi
           REST_EOF
           sudo chmod +x /usr/local/bin/vps-restore-runtime
@@ -244,31 +394,50 @@ jobs:
           RESTORED=0
           for TAG_TRY in "$VAULT_TAG" "$VAULT_PREV_TAG"; do
             if gh release view "$TAG_TRY" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "Found existing state vault [$TAG_TRY], restoring workspace..."
+              echo "Found existing state vault [$TAG_TRY], streaming restore..."
               rm -rf /tmp/vault_in
               mkdir -p /tmp/vault_in
-              if gh release download "$TAG_TRY" --repo "$GITHUB_REPOSITORY" --dir /tmp/vault_in >/dev/null 2>&1; then
-                ENC_META=""
-                if [ -s /tmp/vault_in/vault.meta ]; then
-                  ENC_META=$(cat /tmp/vault_in/vault.meta)
-                else
-                  ENC_META=$(curl -fsSL "https://ntfy.sh/${M_TOPIC}/raw?poll=1&since=48h" 2>/dev/null | tail -n 1 || true)
-                fi
-                if [ -n "$ENC_META" ]; then
-                  DEC_META=$(echo -n "$ENC_META" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null || true)
-                  R_CID="${DEC_META%%:*}"
-                  R_KEY="${DEC_META#*:}"
-                  if [ -n "$R_CID" ] && [ -n "$R_KEY" ] && ls /tmp/vault_in/StateVault.vlt.* >/dev/null 2>&1; then
-                    cat /tmp/vault_in/StateVault.vlt.* | \
-                      openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_KEY" 2>/dev/null | \
-                      sudo tar -I 'gzip -1' -xpf - -C / 2>/dev/null || true
-                    sudo chmod 755 /root
+
+              gh release download "$TAG_TRY" --repo "$GITHUB_REPOSITORY" -p "vault.meta" --dir /tmp/vault_in --clobber >/dev/null 2>&1 || true
+              ENC_META=""
+              if [ -s /tmp/vault_in/vault.meta ]; then
+                ENC_META=$(cat /tmp/vault_in/vault.meta | tr -d '\r\n ')
+              fi
+              if [ -z "$ENC_META" ]; then
+                ENC_META=$(gh release view "$TAG_TRY" --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | tr -d '\r\n ')
+              fi
+              if [ -z "$ENC_META" ]; then
+                ENC_META=$(curl -fsSL "https://ntfy.sh/${M_TOPIC}/raw?poll=1&since=48h" 2>/dev/null | tail -n 1 || true)
+              fi
+
+              if [ -n "$ENC_META" ]; then
+                DEC_META=$(echo -n "$ENC_META" | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A 2>/dev/null || true)
+                R_CID="${DEC_META%%:*}"
+                R_KEY="${DEC_META#*:}"
+                PARTS=$(gh release view "$TAG_TRY" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep '^StateVault\.vlt\.' | sort)
+
+                if [ -n "$R_CID" ] && [ -n "$R_KEY" ] && [ -n "$PARTS" ]; then
+                  stream_chunks() {
+                    for part in $PARTS; do
+                      gh release download "$TAG_TRY" --repo "$GITHUB_REPOSITORY" -p "$part" --dir /tmp/vault_in --clobber >/dev/null 2>&1 || return 1
+                      cat "/tmp/vault_in/$part"
+                      rm -f "/tmp/vault_in/$part"
+                    done
+                  }
+
+                  if stream_chunks | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_KEY" 2>/dev/null | sudo tar --ignore-failed-read -I 'zstd -d -T0' -xpf - -C / 2>/dev/null; then
+                    RESTORED=1
+                  elif stream_chunks | openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$R_KEY" 2>/dev/null | sudo tar --ignore-failed-read -xzpf - -C / 2>/dev/null; then
+                    RESTORED=1
+                  fi
+
+                  if [ "$RESTORED" -eq 1 ]; then
+                    rm -rf /tmp/vault_in
+                    sudo chmod 755 /root /home/runner
                     printf 'CID="%s"\nKEY="%s"\n' "$R_CID" "$R_KEY" | sudo tee /root/.vps_creds /etc/vps_creds >/dev/null
                     sudo chmod 644 /root/.vps_creds /etc/vps_creds
                     sudo /usr/local/bin/vps-restore-runtime
-                    RESTORED=1
                     echo "Workspace state [$TAG_TRY] restored successfully."
-                    rm -rf /tmp/vault_in
                     break
                   fi
                 fi
@@ -278,24 +447,34 @@ jobs:
           done
 
           if [ "$RESTORED" -eq 0 ]; then
+            sudo /usr/local/bin/vps-unify-homes >/dev/null 2>&1 || true
             if sudo test -f /root/.vps_creds; then
               sudo cp /root/.vps_creds /etc/vps_creds
               sudo chmod 644 /root/.vps_creds /etc/vps_creds
             else
               NEW_CID="node-$(openssl rand -hex 3)"
-              NEW_KEY=" Pass-$(openssl rand -base64 9 | tr -dc 'a-zA-Z0-9' | cut -c1-10)"
-              NEW_KEY="${NEW_KEY# }"
+              NEW_KEY="Pass-$(openssl rand -base64 9 | tr -dc 'a-zA-Z0-9' | cut -c1-10)"
               printf 'CID="%s"\nKEY="%s"\n' "$NEW_CID" "$NEW_KEY" | sudo tee /root/.vps_creds /etc/vps_creds >/dev/null
               sudo chmod 644 /root/.vps_creds /etc/vps_creds
               ENC_META=$(echo -n "${NEW_CID}:${NEW_KEY}" | openssl enc -aes-256-cbc -pbkdf2 -pass pass:"$R_SEAL" -a -A)
               curl -fsSL -X POST -d "$ENC_META" "https://ntfy.sh/${M_TOPIC}" >/dev/null 2>&1 || true
               echo "Initialized fresh workspace credentials for Shard #${SHARD_ID}."
             fi
+            if ! sudo test -f /root/autostart.sh; then
+              sudo tee /root/autostart.sh >/dev/null <<'AUTO_EOF'
+          #!/bin/bash
+          # Tambahkan command server/bot yang ingin selalu otomatis menyala setiap ganti shard di bawah ini:
+          AUTO_EOF
+              sudo chmod +x /root/autostart.sh
+            fi
           fi
 
       - name: Execute Runtime Service & Edge Bridge
         run: |
-          sudo chmod 755 /root
+          set +e
+          sudo chmod 755 /root /home/runner
+          sudo /usr/local/bin/vps-unify-homes >/dev/null 2>&1 || true
+
           if sudo test -f /root/.vps_creds; then
             eval "$(sudo cat /root/.vps_creds)"
           elif sudo test -f /etc/vps_creds; then
@@ -311,11 +490,20 @@ jobs:
           echo "$S_TMUX" | base64 -d | sudo bash
           echo "$S_AUTH" | base64 -d | sudo KEY="$KEY" bash
 
-          nohup sudo /usr/local/bin/ws-bridge --binary ws-l:127.0.0.1:8080 tcp:127.0.0.1:2222 >/dev/null 2>&1 &
+          sudo tee -a /root/.bashrc >/dev/null <<'BRC_EOF'
+          export HOME="/root"
+          export XDG_CONFIG_HOME="/root/.config"
+          export XDG_DATA_HOME="/root/.local/share"
+          export XDG_STATE_HOME="/root/.local/state"
+          BRC_EOF
+
+          export RUNNER_TRACKER_ID=""
+          nohup sudo /usr/local/bin/ws-bridge -E --binary ws-l:127.0.0.1:8080 tcp:127.0.0.1:2222 >/dev/null 2>&1 &
 
           start_edge_bridge() {
             sudo pkill -f "edge-connector" >/dev/null 2>&1 || true
             rm -f /tmp/edge.log
+            export RUNNER_TRACKER_ID=""
             echo "$S_TUN" | base64 -d | sudo bash
             ENDPOINT=""
             REGEX_HOST=$(echo "$PAT_HOST" | base64 -d)
@@ -343,28 +531,26 @@ jobs:
 
           if [ "${SHARD_ID}" = "1" ]; then
             eval "$(echo "$T_TPL" | base64 -d)"
+            sudo /usr/local/bin/vps-sync-state >/dev/null 2>&1 &
           else
             echo "=================================================================="
             echo "   CI RUNTIME SHARD #${SHARD_ID} ACTIVE (${TIER_NAME})"
             echo "   Workflow Vault : ${GITHUB_RUN_ID} vault"
             echo "   Node ID (CID)  : ${CID}"
+            echo "   Endpoint       : ${ENDPOINT}"
             echo "   Status         : Synchronized with Shard #1 credentials"
             echo "=================================================================="
           fi
 
-          if [ "${SHARD_ID}" = "1" ]; then
-            sudo /usr/local/bin/vps-sync-state >/dev/null 2>&1 || true
-          fi
-
           START_TS=$(date +%s)
-          MAX_RUNTIME=20160 # 336 minutes (5.6 hours)
+          MAX_RUNTIME=19200 # 320 menit (5.33 jam)
           LAST_SYNC=$START_TS
 
           while true; do
             NOW_TS=$(date +%s)
             ELAPSED=$((NOW_TS - START_TS))
             if [ "$ELAPSED" -ge "$MAX_RUNTIME" ]; then
-              echo "Shard #${SHARD_ID} target duration reached (336m). Preparing state handoff..."
+              echo "Shard #${SHARD_ID} target duration reached (320m). Preparing state handoff..."
               break
             fi
 
@@ -372,7 +558,8 @@ jobs:
               sudo /usr/sbin/sshd -f /tmp/d.cfg 2>/dev/null || true
             fi
             if ! pgrep -f "ws-bridge" >/dev/null 2>&1; then
-              nohup sudo /usr/local/bin/ws-bridge --binary ws-l:127.0.0.1:8080 tcp:127.0.0.1:2222 >/dev/null 2>&1 &
+              export RUNNER_TRACKER_ID=""
+              nohup sudo /usr/local/bin/ws-bridge -E --binary ws-l:127.0.0.1:8080 tcp:127.0.0.1:2222 >/dev/null 2>&1 &
             fi
             if ! pgrep -f "edge-connector" >/dev/null 2>&1; then
               start_edge_bridge
@@ -387,7 +574,7 @@ jobs:
 
             if [ $((NOW_TS - LAST_SYNC)) -ge 1800 ]; then
               echo "[$(date -u '+%H:%M:%S UTC')] Performing periodic workspace state checkpoint..."
-              sudo /usr/local/bin/vps-sync-state >/dev/null 2>&1 || true
+              sudo /usr/local/bin/vps-sync-state >/dev/null 2>&1 &
               LAST_SYNC=$NOW_TS
             fi
 
@@ -397,6 +584,8 @@ jobs:
       - name: Finalize & Persist Workspace Vault
         if: always()
         run: |
+          set +e
           echo "Executing final workspace state persistence for Shard #${SHARD_ID}..."
+          wait 2>/dev/null || true
           sudo /usr/local/bin/vps-sync-state
           echo "Vault [${GITHUB_RUN_ID} vault] updated and sealed."
